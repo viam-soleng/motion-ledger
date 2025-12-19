@@ -1,0 +1,13 @@
+{
+  "module_name": "motion-ledger",
+  "namespace": "bill",
+  "language": "go",
+  "resource_type": "service",
+  "resource_subtype": "generic",
+  "model_name": "ledger",
+  "enable_cloud_build": true,
+  "initialize_git": false,
+  "generator_version": "0.1.0",
+  "generated_on": "2025-12-18T16:27:03.24105828Z",
+  "module_readme_link": "README.md"
+}
