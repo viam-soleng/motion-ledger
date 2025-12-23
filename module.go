@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	"strings"
 
 	sensor "go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/logging"
@@ -15,7 +16,6 @@ import (
 
 	"motionledger/utils/ledger"
 	"motionledger/utils/motion"
-
 )
 
 // Ledger is the registered model for the motion ledger sensor.
@@ -45,7 +45,6 @@ type Config struct {
 	// Names of motion detector vision services to poll
 	MotionDetectors []string `json:"motion_detectors"`
 }
-
 
 // Validate sets defaults and declares required motion detector dependencies.
 // The module will fail to start unless all configured detectors are present.
@@ -106,7 +105,6 @@ func newMotionLedgerLedger(ctx context.Context, deps resource.Dependencies, rawC
 	}
 
 	return NewLedger(ctx, deps, rawConf.ResourceName(), conf, logger)
-
 }
 
 // NewLedger loads or creates the motion ledger and ensures entries
@@ -148,7 +146,6 @@ func NewLedger(
 	return s, nil
 }
 
-
 func (s *motionLedgerLedger) Name() resource.Name {
 	return s.name
 }
@@ -167,11 +164,22 @@ func (s *motionLedgerLedger) Readings(ctx context.Context, extra map[string]inte
 // - poll_for_motion: query detectors and record events
 // - clear_ledger: clear all or per-detector history
 // - dump_ledger: return full raw ledger contents
+// - query_motion: count motion events in a [from,to] window, optionally scoped to one detector
 func (s *motionLedgerLedger) DoCommand(
 	ctx context.Context,
 	cmd map[string]interface{},
 ) (map[string]interface{}, error) {
 
+	// New command surface: {"command":"query_motion","from":"...","to":"...","vision_service":"vision-1"}
+	if c, ok := cmd["command"]; ok {
+		if cs, ok2 := c.(string); ok2 && cs == "query_motion" {
+			return s.handleQueryMotion(ctx, cmd)
+		}
+	}
+	// Back-compat alternate: {"query_motion":true,"from":"...","to":"...","vision_service":"vision-1"}
+	if _, ok := cmd["query_motion"]; ok {
+		return s.handleQueryMotion(ctx, cmd)
+	}
 
 	// handlePollForMotion queries each configured motion detector,
 	// records any positive-confidence motion events, prunes old data,
@@ -197,7 +205,6 @@ func (s *motionLedgerLedger) DoCommand(
 
 // Close terminates any background activity and releases resources.
 func (s *motionLedgerLedger) Close(context.Context) error {
-	// Put close code here
 	s.cancelFunc()
 	return nil
 }
@@ -254,6 +261,25 @@ func (s *motionLedgerLedger) handlePollForMotion(
 		time.Duration(s.cfg.RetentionHours)*time.Hour,
 	)
 
+	// Clean up detectors that are no longer configured and have no remaining events
+	configured := make(map[string]struct{}, len(s.cfg.MotionDetectors))
+	for _, name := range s.cfg.MotionDetectors {
+		configured[name] = struct{}{}
+	}
+
+	// Keep any special/system buckets you rely on
+	configured["error"] = struct{}{}
+
+	for name, dl := range s.ledger.Detectors {
+		if _, ok := configured[name]; ok {
+			continue
+		}
+		if dl == nil || len(dl.Events) == 0 {
+			delete(s.ledger.Detectors, name)
+		}
+	}
+
+
 	if err := ledger.WriteAtomic(s.cfg.LedgerPath, s.ledger); err != nil {
 		return nil, err
 	}
@@ -305,3 +331,106 @@ func (s *motionLedgerLedger) handleClearLedger(
 	}, nil
 }
 
+// handleQueryMotion counts motion events within an inclusive [from,to] window.
+// Inputs:
+//   - from: RFC3339/RFC3339Nano timestamp string
+//   - to:   RFC3339/RFC3339Nano timestamp string
+//   - vision_service (optional): detector name to scope to; if omitted counts across all detectors
+//
+// Output:
+//   - has_motion: bool
+//   - count: int
+func (s *motionLedgerLedger) handleQueryMotion(
+	ctx context.Context,
+	cmd map[string]interface{},
+) (map[string]interface{}, error) {
+
+	_ = ctx // reserved for future, keeps signature consistent
+
+	fromStr, ok := cmd["from"].(string)
+	if !ok || fromStr == "" {
+		return nil, fmt.Errorf("query_motion requires string field 'from'")
+	}
+	toStr, ok := cmd["to"].(string)
+	if !ok || toStr == "" {
+		return nil, fmt.Errorf("query_motion requires string field 'to'")
+	}
+
+	parseTS := func(v string) (time.Time, error) {
+		// Accept a filename-safe variant: 2025-12-23_17-59-58Z
+		if strings.Contains(v, "_") && strings.HasSuffix(v, "Z") && !strings.Contains(v, "T") {
+			parts := strings.SplitN(v, "_", 2)
+			if len(parts) == 2 {
+				// 17-59-58Z -> 17:59:58Z
+				tpart := strings.ReplaceAll(parts[1], "-", ":")
+				v = parts[0] + "T" + tpart
+			}
+		}
+
+		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			return t, nil
+		}
+		return time.Parse(time.RFC3339, v)
+	}
+
+
+	fromTS, err := parseTS(fromStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid 'from' timestamp %q: %w", fromStr, err)
+	}
+	toTS, err := parseTS(toStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid 'to' timestamp %q: %w", toStr, err)
+	}
+	if fromTS.After(toTS) {
+		return nil, fmt.Errorf("'from' must be <= 'to' (from=%q to=%q)", fromStr, toStr)
+	}
+
+	visionService := ""
+	if v, ok := cmd["vision_service"]; ok {
+		if vs, ok2 := v.(string); ok2 {
+			visionService = vs
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	count := 0
+
+	within := func(ts time.Time) bool {
+		// inclusive bounds: from <= ts <= to
+		if ts.Before(fromTS) {
+			return false
+		}
+		if ts.After(toTS) {
+			return false
+		}
+		return true
+	}
+
+	if visionService != "" {
+		dl, ok := s.ledger.Detectors[visionService]
+		if !ok {
+			return nil, fmt.Errorf("unknown vision_service %q (not in ledger)", visionService)
+		}
+		for _, ev := range dl.Events {
+			if within(ev.Timestamp) {
+				count++
+			}
+		}
+	} else {
+		for _, dl := range s.ledger.Detectors {
+			for _, ev := range dl.Events {
+				if within(ev.Timestamp) {
+					count++
+				}
+			}
+		}
+	}
+
+	return map[string]interface{}{
+		"has_motion": count > 0,
+		"count":      count,
+	}, nil
+}
