@@ -28,3 +28,7 @@ go.work.sum
 # Build outputs
 bin
 *tar.gz
+
+# Stray root-level binary produced by ad-hoc builds (not the Makefile output,
+# which goes to bin/). Anchored to repo root so it doesn't clash with module.go.
+/module

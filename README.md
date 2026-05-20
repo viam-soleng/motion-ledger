@@ -10,6 +10,14 @@ to the cloud.
 
 - `bill:motion-ledger:ledger` — see [bill_motion-ledger_ledger.md](bill_motion-ledger_ledger.md).
 
+## Setup
+
+If you're getting this running on a machine for the first time, see
+[SETUP.md](SETUP.md) for an end-to-end walkthrough — prerequisites,
+configuration, verification, and troubleshooting for the errors that
+commonly come up the first time around. The rest of this README is the
+configuration and behavior reference.
+
 ## How it works
 
 On every poll the module:
