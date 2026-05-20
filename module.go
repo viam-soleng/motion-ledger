@@ -20,9 +20,9 @@ import (
 )
 
 // Ledger is the registered model for the motion ledger sensor.
-// Namespace: bill, Family: motion-ledger, Model: ledger
+// Namespace: viam-soleng, Family: motion-ledger, Model: ledger
 var (
-	Ledger = resource.NewModel("bill", "motion-ledger", "ledger")
+	Ledger = resource.NewModel("viam-soleng", "motion-ledger", "ledger")
 	// Reserved for future command or API surface expansion.
 	errUnimplemented = errors.New("unimplemented")
 )

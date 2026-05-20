@@ -1,8 +1,8 @@
 # Setup guide
 
-End-to-end walkthrough for getting `bill:motion-ledger:ledger` running on a
+End-to-end walkthrough for getting `viam-soleng:motion-ledger:ledger` running on a
 Viam machine. If you just need the configuration reference, see
-[README.md](README.md) and [bill_motion-ledger_ledger.md](bill_motion-ledger_ledger.md).
+[README.md](README.md) and [viam-soleng_motion-ledger_ledger.md](viam-soleng_motion-ledger_ledger.md).
 
 This guide assumes you're consuming the module from the Viam registry. If
 the registry has no published version yet, the steps below will fail at the
@@ -51,7 +51,7 @@ following already working:
 In app.viam.com → your machine → **CONFIGURE** tab:
 
 1. Click **+** (top left of the configure panel) → **Module**.
-2. Search the registry for `bill:motion-ledger`.
+2. Search the registry for `viam-soleng:motion-ledger`.
 3. Click **Add module**.
 4. Save the config.
 
@@ -62,7 +62,7 @@ download the module package on the next reconfigure.
 
 Still in **CONFIGURE**, click **+** → **Component** → **sensor**, then:
 
-1. Pick the model `bill:motion-ledger:ledger`.
+1. Pick the model `viam-soleng:motion-ledger:ledger`.
 2. Give it a name (e.g. `motion-ledger`).
 3. Switch to the **JSON** view of the component to set its attributes.
 
@@ -93,7 +93,7 @@ Save the config. Within a few seconds the **LOGS** tab should show a line
 like:
 
 ```
-Successfully constructed resource ... bill:motion-ledger:ledger
+Successfully constructed resource ... viam-soleng:motion-ledger:ledger
 ```
 
 If `poll_interval_seconds > 0`, you'll also see:

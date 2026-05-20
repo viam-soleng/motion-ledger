@@ -1,6 +1,6 @@
 {
   "$schema": "https://dl.viam.dev/module.schema.json",
-  "module_id": "bill:motion-ledger",
+  "module_id": "viam-soleng:motion-ledger",
   "visibility": "public",
   "url": "https://github.com/viam-soleng/motion-ledger",
   "description": "Sensor that polls vision-service motion detectors and maintains a persistent, queryable on-device ledger of motion events.",

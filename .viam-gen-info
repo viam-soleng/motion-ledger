@@ -1,6 +1,6 @@
 {
   "module_name": "motion-ledger",
-  "namespace": "bill",
+  "namespace": "viam-soleng",
   "language": "go",
   "resource_type": "component",
   "resource_subtype": "sensor",
