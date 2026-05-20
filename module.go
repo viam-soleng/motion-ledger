@@ -1,5 +1,6 @@
 // motionledger implements a sensor that polls one or more motion-detector
-// vision services on demand and persists motion events to disk.
+// vision services — on demand via DoCommand and/or on a configurable
+// internal interval — and persists motion events to disk.
 package motionledger
 
 import (
@@ -24,6 +25,14 @@ var (
 	Ledger = resource.NewModel("bill", "motion-ledger", "ledger")
 	// Reserved for future command or API surface expansion.
 	errUnimplemented = errors.New("unimplemented")
+)
+
+// Default values applied when a Config field is left empty/zero. These are
+// applied in NewLedger rather than only in Validate so that defaults survive
+// the rawConf → NativeConfig re-parse performed by the RDK runtime.
+const (
+	defaultLedgerPath     = "/var/lib/viam/motion-events.json"
+	defaultRetentionHours = 48
 )
 
 func init() {
@@ -51,19 +60,29 @@ type Config struct {
 	// Retention window for motion events, in hours.
 	RetentionHours int `json:"retention_hours,omitempty"`
 
+	// Interval (in seconds) at which the module polls detectors on its own.
+	// 0 (the default) disables internal polling; in that mode the operator
+	// must trigger polls via DoCommand({"poll_for_motion": true}).
+	PollIntervalSeconds int `json:"poll_interval_seconds,omitempty"`
+
 	// Motion detectors to poll, each bound to a specific camera.
 	MotionDetectors []DetectorConfig `json:"motion_detectors"`
 }
 
-// Validate sets defaults and declares required motion detector dependencies.
-// The module will fail to start unless all configured detectors are present.
+// Validate checks structural constraints and declares required motion
+// detector dependencies. The module will fail to start unless all configured
+// detectors are present.
+//
+// Note: default values for empty/zero fields are NOT applied here. The RDK
+// runtime re-parses rawConf into a fresh Config before calling the
+// constructor, so any mutations made in Validate are discarded. Defaults are
+// applied in NewLedger instead.
 func (cfg *Config) Validate(path string) ([]string, []string, error) {
-	if cfg.LedgerPath == "" {
-		cfg.LedgerPath = "/var/lib/viam/motion-events.json"
-	}
-
-	if cfg.RetentionHours <= 0 {
-		cfg.RetentionHours = 48
+	if cfg.PollIntervalSeconds < 0 {
+		return nil, nil, fmt.Errorf(
+			"%s.poll_interval_seconds must be >= 0 (got %d)",
+			path, cfg.PollIntervalSeconds,
+		)
 	}
 
 	if len(cfg.MotionDetectors) == 0 {
@@ -133,8 +152,21 @@ func newMotionLedgerLedger(ctx context.Context, deps resource.Dependencies, rawC
 	return NewLedger(ctx, deps, rawConf.ResourceName(), conf, logger)
 }
 
-// NewLedger loads or creates the motion ledger and ensures entries
-// exist for all configured detectors.
+// applyDefaults fills in default values for any Config field left empty or
+// zero. Called from NewLedger because Validate-time mutations are discarded
+// by the RDK's rawConf → NativeConfig re-parse.
+func applyDefaults(conf *Config) {
+	if conf.LedgerPath == "" {
+		conf.LedgerPath = defaultLedgerPath
+	}
+	if conf.RetentionHours <= 0 {
+		conf.RetentionHours = defaultRetentionHours
+	}
+}
+
+// NewLedger loads or creates the motion ledger, ensures entries exist for
+// all configured detectors, applies field defaults, and (if configured)
+// starts a background polling goroutine.
 func NewLedger(
 	ctx context.Context,
 	deps resource.Dependencies,
@@ -142,6 +174,9 @@ func NewLedger(
 	conf *Config,
 	logger logging.Logger,
 ) (sensor.Sensor, error) {
+
+	// Apply defaults here (not in Validate — see comment on Validate).
+	applyDefaults(conf)
 
 	l, err := ledger.LoadOrCreate(conf.LedgerPath)
 	if err != nil {
@@ -169,7 +204,38 @@ func NewLedger(
 		cancelFunc: cancelFunc,
 	}
 
+	if conf.PollIntervalSeconds > 0 {
+		s.startPolling(time.Duration(conf.PollIntervalSeconds) * time.Second)
+	}
+
 	return s, nil
+}
+
+// startPolling launches a background goroutine that calls handlePollForMotion
+// at the given interval. The goroutine exits when s.cancelCtx is cancelled
+// (Close). Polls are serial — if a poll takes longer than the interval, the
+// next tick fires immediately after the previous one returns rather than
+// running concurrently (handlePollForMotion already holds s.mu, so concurrent
+// runs would serialize anyway).
+func (s *motionLedgerLedger) startPolling(interval time.Duration) {
+	s.logger.Infow("starting internal polling", "interval", interval.String())
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-s.cancelCtx.Done():
+				s.logger.Debug("internal polling stopped")
+				return
+			case <-ticker.C:
+				if _, err := s.handlePollForMotion(s.cancelCtx); err != nil {
+					s.logger.Errorw("internal poll failed", "error", err)
+				}
+			}
+		}
+	}()
 }
 
 func (s *motionLedgerLedger) Name() resource.Name {

@@ -12,7 +12,7 @@ to the cloud.
 
 ## How it works
 
-On demand (via `DoCommand`), the module:
+On every poll the module:
 
 1. Queries every configured vision service with `DetectionsFromCamera` against
    the camera you bound it to.
@@ -23,9 +23,14 @@ On demand (via `DoCommand`), the module:
    (write-to-`.tmp` → `rename`). Corrupt files on load are quarantined as
    `<path>.corrupt` and replaced with a fresh ledger.
 
-**The module does not poll on its own.** You must trigger polling externally —
-from cron, a Viam automation, or another resource calling `DoCommand`. This
-keeps the module simple and lets the operator control cadence.
+A poll runs in either of two ways:
+
+- **External trigger** — anything that can call `DoCommand({"poll_for_motion": true})`:
+  cron, a Viam automation, another resource, an SDK script. This is the default.
+- **Internal interval** — set `poll_interval_seconds` to a positive integer in
+  the component config. The module spawns a background goroutine that polls
+  on that cadence. The two modes can coexist; manual `DoCommand` polls still
+  work when internal polling is on.
 
 ## Configuration
 
@@ -37,6 +42,7 @@ keeps the module simple and lets the operator control cadence.
   "attributes": {
     "ledger_path": "/var/lib/viam/motion-events.json",
     "retention_hours": 48,
+    "poll_interval_seconds": 30,
     "motion_detectors": [
       { "name": "vision-front-door", "camera": "cam-front-door" },
       { "name": "vision-driveway",   "camera": "cam-driveway"   }
@@ -50,7 +56,8 @@ keeps the module simple and lets the operator control cadence.
 |---|---|---|---|---|
 | `motion_detectors` | array of `{name, camera}` | **yes** | — | Each `name` must be a configured vision service on the same machine. Each `camera` is the camera the vision service should pull frames from. Duplicate `name`s are rejected. |
 | `ledger_path` | string | no | `/var/lib/viam/motion-events.json` | Disk location of the JSON ledger. Parent directories are created if missing. |
-| `retention_hours` | int | no | `48` | Events older than this are pruned on every `poll_for_motion`. |
+| `retention_hours` | int | no | `48` | Events older than this are pruned on every poll. |
+| `poll_interval_seconds` | int | no | `0` (off) | When `> 0`, the module polls all detectors on its own every N seconds. `0` disables internal polling — operator must trigger via `DoCommand`. Negative values are rejected. |
 
 Each configured detector `name` is declared as a required dependency, so the
 module will fail to start (loudly) if any detector is missing. Cameras are
@@ -75,8 +82,8 @@ Response:
 { "status": "ok" }
 ```
 
-Trigger this from cron, a Viam automation, or any other resource on whatever
-cadence makes sense for your deployment.
+Trigger this manually whenever you need an immediate poll, even when
+`poll_interval_seconds` is set — the two mechanisms coexist.
 
 ### `query_motion`
 
@@ -169,11 +176,13 @@ in its place — the corrupt file is preserved for offline inspection.
 
 ## Known limitations
 
-- **No internal polling.** External trigger required (intentional).
+- **Polls are serial.** If a poll takes longer than `poll_interval_seconds`,
+  the next tick fires immediately after the previous one returns rather than
+  running concurrently. (`handlePollForMotion` already takes a mutex, so
+  concurrent polls would serialize anyway.)
 - **Time-based retention only.** No per-detector event cap. At 10 detectors
   firing at 1 Hz over a 48 h retention window, the file is ~130 MB worst case.
-  If that's a concern, lower `retention_hours` or trigger `poll_for_motion`
-  less often.
+  If that's a concern, lower `retention_hours` or poll less often.
 - **Local detectors only.** Detectors are looked up by simple resource name
   (no remote prefix), so the vision services must be configured on the same
   machine as this module.
