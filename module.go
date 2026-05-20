@@ -1,14 +1,14 @@
-// motionledger implements a sensor that periodically polls one or more
-// motion-detector vision services and persists motion events to disk.
+// motionledger implements a sensor that polls one or more motion-detector
+// vision services on demand and persists motion events to disk.
 package motionledger
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
-	"strings"
 
 	sensor "go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/logging"
@@ -21,7 +21,7 @@ import (
 // Ledger is the registered model for the motion ledger sensor.
 // Namespace: bill, Family: motion-ledger, Model: ledger
 var (
-	Ledger           = resource.NewModel("bill", "motion-ledger", "ledger")
+	Ledger = resource.NewModel("bill", "motion-ledger", "ledger")
 	// Reserved for future command or API surface expansion.
 	errUnimplemented = errors.New("unimplemented")
 )
@@ -34,16 +34,25 @@ func init() {
 	)
 }
 
+// DetectorConfig binds a motion-detector vision service to the camera
+// it should be queried against.
+type DetectorConfig struct {
+	// Name of the vision service acting as a motion detector.
+	Name string `json:"name"`
+	// Name of the camera the vision service should pull frames from.
+	Camera string `json:"camera"`
+}
+
 // Config defines runtime configuration for the motion ledger sensor.
 type Config struct {
-	// Filesystem path where motion events are persisted
+	// Filesystem path where motion events are persisted.
 	LedgerPath string `json:"ledger_path,omitempty"`
 
-	// Retention window for motion events (in hours)
+	// Retention window for motion events, in hours.
 	RetentionHours int `json:"retention_hours,omitempty"`
 
-	// Names of motion detector vision services to poll
-	MotionDetectors []string `json:"motion_detectors"`
+	// Motion detectors to poll, each bound to a specific camera.
+	MotionDetectors []DetectorConfig `json:"motion_detectors"`
 }
 
 // Validate sets defaults and declares required motion detector dependencies.
@@ -59,15 +68,32 @@ func (cfg *Config) Validate(path string) ([]string, []string, error) {
 
 	if len(cfg.MotionDetectors) == 0 {
 		return nil, nil, fmt.Errorf(
-			"%s.motion_detectors must contain at least one detector name",
+			"%s.motion_detectors must contain at least one detector",
 			path,
 		)
 	}
 
-	// REQUIRED deps: motion detectors must exist
+	seen := make(map[string]struct{}, len(cfg.MotionDetectors))
 	required := make([]string, 0, len(cfg.MotionDetectors))
-	for _, name := range cfg.MotionDetectors {
-		required = append(required, name)
+	for i, d := range cfg.MotionDetectors {
+		if d.Name == "" {
+			return nil, nil, fmt.Errorf(
+				"%s.motion_detectors[%d].name must be set", path, i,
+			)
+		}
+		if d.Camera == "" {
+			return nil, nil, fmt.Errorf(
+				"%s.motion_detectors[%d].camera must be set", path, i,
+			)
+		}
+		if _, dup := seen[d.Name]; dup {
+			return nil, nil, fmt.Errorf(
+				"%s.motion_detectors[%d].name %q is duplicated",
+				path, i, d.Name,
+			)
+		}
+		seen[d.Name] = struct{}{}
+		required = append(required, d.Name)
 	}
 
 	return required, nil, nil
@@ -82,16 +108,16 @@ type motionLedgerLedger struct {
 	logger logging.Logger
 	cfg    *Config
 
-	// Resolved dependencies (motion detector services)
+	// Resolved dependencies (motion detector services).
 	deps resource.Dependencies
 
-	// In-memory representation of the on-disk motion ledger
+	// In-memory representation of the on-disk motion ledger.
 	ledger *ledger.Ledger
 
-	// Guards ledger access and mutation
+	// Guards ledger access and mutation.
 	mu sync.RWMutex
 
-	// Lifecycle cancellation
+	// Lifecycle cancellation.
 	cancelCtx  context.Context
 	cancelFunc func()
 }
@@ -117,21 +143,21 @@ func NewLedger(
 	logger logging.Logger,
 ) (sensor.Sensor, error) {
 
-	cancelCtx, cancelFunc := context.WithCancel(context.Background())
-
 	l, err := ledger.LoadOrCreate(conf.LedgerPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Ensure ledger entries exist for all configured detectors
-	for _, name := range conf.MotionDetectors {
-		if _, ok := l.Detectors[name]; !ok {
-			l.Detectors[name] = &ledger.DetectorLedger{
+	// Ensure ledger entries exist for all configured detectors.
+	for _, d := range conf.MotionDetectors {
+		if _, ok := l.Detectors[d.Name]; !ok {
+			l.Detectors[d.Name] = &ledger.DetectorLedger{
 				Events: []ledger.MotionEvent{},
 			}
 		}
 	}
+
+	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 
 	s := &motionLedgerLedger{
 		name:       name,
@@ -156,40 +182,34 @@ func (s *motionLedgerLedger) Readings(ctx context.Context, extra map[string]inte
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Return a summarized, in-memory view of the ledger
 	return ledger.ToReadings(s.ledger), nil
 }
 
 // DoCommand supports administrative and polling commands:
-// - poll_for_motion: query detectors and record events
-// - clear_ledger: clear all or per-detector history
-// - dump_ledger: return full raw ledger contents
-// - query_motion: count motion events in a [from,to] window, optionally scoped to one detector
+//   - poll_for_motion: query detectors and record events
+//   - clear_ledger:    clear all or per-detector history
+//   - dump_ledger:     return full raw ledger contents
+//   - query_motion:    count motion events in [from,to], optionally scoped to one detector
 func (s *motionLedgerLedger) DoCommand(
 	ctx context.Context,
 	cmd map[string]interface{},
 ) (map[string]interface{}, error) {
 
-	// New command surface: {"command":"query_motion","from":"...","to":"...","vision_service":"vision-1"}
+	// Explicit command form: {"command":"query_motion", ...}
 	if c, ok := cmd["command"]; ok {
 		if cs, ok2 := c.(string); ok2 && cs == "query_motion" {
 			return s.handleQueryMotion(ctx, cmd)
 		}
 	}
-	// Back-compat alternate: {"query_motion":true,"from":"...","to":"...","vision_service":"vision-1"}
+	// Back-compat alternate: {"query_motion":true, ...}
 	if _, ok := cmd["query_motion"]; ok {
 		return s.handleQueryMotion(ctx, cmd)
 	}
 
-	// handlePollForMotion queries each configured motion detector,
-	// records any positive-confidence motion events, prunes old data,
-	// and atomically persists the updated ledger to disk.
 	if _, ok := cmd["poll_for_motion"]; ok {
 		return s.handlePollForMotion(ctx)
 	}
 
-	// handleClearLedger clears motion history either globally or
-	// for a single detector and persists the result.
 	if v, ok := cmd["clear_ledger"]; ok {
 		return s.handleClearLedger(ctx, v)
 	}
@@ -209,6 +229,9 @@ func (s *motionLedgerLedger) Close(context.Context) error {
 	return nil
 }
 
+// handlePollForMotion queries each configured motion detector, records
+// any positive-confidence motion events, prunes old data, and atomically
+// persists the updated ledger to disk.
 func (s *motionLedgerLedger) handlePollForMotion(
 	ctx context.Context,
 ) (map[string]interface{}, error) {
@@ -218,22 +241,24 @@ func (s *motionLedgerLedger) handlePollForMotion(
 
 	s.logger.Debug("motion poll started")
 
-	detectors, err := motion.ResolveConfiguredDetectors(
-		s.deps,
-		s.cfg.MotionDetectors,
-	)
+	detectorCameras := make(map[string]string, len(s.cfg.MotionDetectors))
+	for _, d := range s.cfg.MotionDetectors {
+		detectorCameras[d.Name] = d.Camera
+	}
+
+	resolved, err := motion.ResolveConfiguredDetectors(s.deps, detectorCameras)
 	if err != nil {
-		s.logger.Warn("motion poll failed: could not resolve detectors")
-		ledger.RecordEvent(s.ledger, "error", 0.0)
+		s.logger.Errorw("motion poll: could not resolve detectors", "error", err)
 		return nil, err
 	}
 
-	for name, detector := range detectors {
-		conf, err := motion.QueryMotion(ctx, detector)
+	for name, rd := range resolved {
+		conf, err := motion.QueryMotion(ctx, rd.Service, rd.Camera)
 		if err != nil {
-			s.logger.Error(
+			s.logger.Errorw(
 				"motion poll: detector error",
 				"detector", name,
+				"camera", rd.Camera,
 				"error", err,
 			)
 			continue
@@ -247,10 +272,7 @@ func (s *motionLedgerLedger) handlePollForMotion(
 			)
 			ledger.RecordEvent(s.ledger, name, conf)
 		} else {
-			s.logger.Debugf(
-				"no motion detected (%s)",
-				name,
-			)
+			s.logger.Debugf("no motion detected (%s)", name)
 		}
 	}
 
@@ -261,14 +283,11 @@ func (s *motionLedgerLedger) handlePollForMotion(
 		time.Duration(s.cfg.RetentionHours)*time.Hour,
 	)
 
-	// Clean up detectors that are no longer configured and have no remaining events
+	// Drop detectors that are no longer configured and have no remaining events.
 	configured := make(map[string]struct{}, len(s.cfg.MotionDetectors))
-	for _, name := range s.cfg.MotionDetectors {
-		configured[name] = struct{}{}
+	for _, d := range s.cfg.MotionDetectors {
+		configured[d.Name] = struct{}{}
 	}
-
-	// Keep any special/system buckets you rely on
-	configured["error"] = struct{}{}
 
 	for name, dl := range s.ledger.Detectors {
 		if _, ok := configured[name]; ok {
@@ -278,7 +297,6 @@ func (s *motionLedgerLedger) handlePollForMotion(
 			delete(s.ledger.Detectors, name)
 		}
 	}
-
 
 	if err := ledger.WriteAtomic(s.cfg.LedgerPath, s.ledger); err != nil {
 		return nil, err
@@ -320,10 +338,7 @@ func (s *motionLedgerLedger) handleClearLedger(
 		return nil, err
 	}
 
-	s.logger.Info(
-		"ledger cleared",
-		"scope", target,
-	)
+	s.logger.Infow("ledger cleared", "scope", target)
 
 	return map[string]interface{}{
 		"status": "cleared",
@@ -333,19 +348,19 @@ func (s *motionLedgerLedger) handleClearLedger(
 
 // handleQueryMotion counts motion events within an inclusive [from,to] window.
 // Inputs:
-//   - from: RFC3339/RFC3339Nano timestamp string
-//   - to:   RFC3339/RFC3339Nano timestamp string
-//   - vision_service (optional): detector name to scope to; if omitted counts across all detectors
+//   - from:           RFC3339/RFC3339Nano timestamp string
+//   - to:             RFC3339/RFC3339Nano timestamp string
+//   - vision_service: optional detector name to scope to; if omitted, all detectors
 //
 // Output:
 //   - has_motion: bool
-//   - count: int
+//   - count:      int
 func (s *motionLedgerLedger) handleQueryMotion(
 	ctx context.Context,
 	cmd map[string]interface{},
 ) (map[string]interface{}, error) {
 
-	_ = ctx // reserved for future, keeps signature consistent
+	_ = ctx // reserved for future use; keeps signature consistent
 
 	fromStr, ok := cmd["from"].(string)
 	if !ok || fromStr == "" {
@@ -361,18 +376,15 @@ func (s *motionLedgerLedger) handleQueryMotion(
 		if strings.Contains(v, "_") && strings.HasSuffix(v, "Z") && !strings.Contains(v, "T") {
 			parts := strings.SplitN(v, "_", 2)
 			if len(parts) == 2 {
-				// 17-59-58Z -> 17:59:58Z
 				tpart := strings.ReplaceAll(parts[1], "-", ":")
 				v = parts[0] + "T" + tpart
 			}
 		}
-
 		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
 			return t, nil
 		}
 		return time.Parse(time.RFC3339, v)
 	}
-
 
 	fromTS, err := parseTS(fromStr)
 	if err != nil {
@@ -396,8 +408,6 @@ func (s *motionLedgerLedger) handleQueryMotion(
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	count := 0
-
 	within := func(ts time.Time) bool {
 		// inclusive bounds: from <= ts <= to
 		if ts.Before(fromTS) {
@@ -408,6 +418,8 @@ func (s *motionLedgerLedger) handleQueryMotion(
 		}
 		return true
 	}
+
+	count := 0
 
 	if visionService != "" {
 		dl, ok := s.ledger.Detectors[visionService]

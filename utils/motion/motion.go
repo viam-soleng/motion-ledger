@@ -3,8 +3,6 @@
 package motion
 
 import (
-	"image"
-	"image/color"
 	"context"
 	"fmt"
 	"strings"
@@ -13,25 +11,28 @@ import (
 	"go.viam.com/rdk/services/vision"
 )
 
-// emptyImage returns a minimal placeholder image.
-// Some vision services require an image argument even when
-// operating on internal camera state.
-func emptyImage() image.Image {
-	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
-	img.Set(0, 0, color.Black)
-	return img
+// ResolvedDetector pairs a resolved vision service with the camera name
+// it should be queried against.
+type ResolvedDetector struct {
+	Service vision.Service
+	Camera  string
 }
 
-// ResolveConfiguredDetectors resolves only the motion detectors
-// explicitly listed in config.
+// ResolveConfiguredDetectors resolves the motion detectors named in the
+// input map and pairs each with its configured camera name.
+//
+// Keys are vision-service resource names; values are camera names passed
+// through to DetectionsFromCamera. Cameras are not declared as module
+// dependencies — the vision service is responsible for resolving its own
+// camera (which may live on a remote part).
 func ResolveConfiguredDetectors(
 	deps resource.Dependencies,
-	names []string,
-) (map[string]vision.Service, error) {
+	detectorCameras map[string]string,
+) (map[string]ResolvedDetector, error) {
 
-	out := make(map[string]vision.Service)
+	out := make(map[string]ResolvedDetector, len(detectorCameras))
 
-	for _, name := range names {
+	for name, camera := range detectorCameras {
 		rn := resource.Name{
 			API:  vision.API,
 			Name: name,
@@ -47,31 +48,27 @@ func ResolveConfiguredDetectors(
 			return nil, fmt.Errorf("%q is not a vision service", name)
 		}
 
-		out[name] = v
+		out[name] = ResolvedDetector{Service: v, Camera: camera}
 	}
 
 	return out, nil
 }
 
-// QueryMotion queries a motion detector and returns the confidence
-// of the "motion" label if present.
+// QueryMotion asks the vision service for detections from the configured
+// camera and returns the confidence of the first "motion" label, if any.
 func QueryMotion(
 	ctx context.Context,
 	detector vision.Service,
+	camera string,
 ) (float64, error) {
-	
-	// Use a placeholder image; detector is expected to operate on
-	// its internally configured camera.
-	img := emptyImage()
-	dets, err := detector.Detections(ctx, img, nil)
+
+	dets, err := detector.DetectionsFromCamera(ctx, camera, nil)
 	if err != nil {
 		return 0.0, err
 	}
 
-	// Motion detectors are expected to emit a single "motion" detection,
-	// but we defensively scan all detections.
 	for _, d := range dets {
-		if strings.ToLower(d.Label()) == "motion" {
+		if strings.EqualFold(d.Label(), "motion") {
 			return d.Score(), nil
 		}
 	}

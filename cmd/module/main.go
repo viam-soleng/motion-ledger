@@ -1,13 +1,13 @@
 package main
 
 import (
-	"motionledger"
+	sensor "go.viam.com/rdk/components/sensor"
 	"go.viam.com/rdk/module"
 	"go.viam.com/rdk/resource"
-	sensor "go.viam.com/rdk/components/sensor"
+	"motionledger"
 )
 
 func main() {
 	// ModularMain can take multiple APIModel arguments, if your module implements multiple models.
-	module.ModularMain(resource.APIModel{ sensor.API, motionledger.Ledger})
+	module.ModularMain(resource.APIModel{API: sensor.API, Model: motionledger.Ledger})
 }

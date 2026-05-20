@@ -3,11 +3,11 @@
 package ledger
 
 import (
-	"fmt"
 	"encoding/json"
+	"fmt"
 	"os"
-	"time"
 	"path/filepath"
+	"time"
 )
 
 // MotionEvent represents a single motion occurrence at a point in time.
@@ -45,8 +45,8 @@ func LoadOrCreate(path string) (*Ledger, error) {
 
 	var l Ledger
 	if err := json.Unmarshal(data, &l); err != nil {
-	// Preserve corrupt file for offline inspection
-	_ = os.Rename(path, path+".corrupt")
+		// Preserve corrupt file for offline inspection
+		_ = os.Rename(path, path+".corrupt")
 		return &Ledger{
 			Detectors: make(map[string]*DetectorLedger),
 			LastPrune: time.Now().UTC(),
