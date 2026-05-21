@@ -1,4 +1,4 @@
-# `bill:motion-ledger:ledger`
+# `viam-soleng:motion-ledger:ledger`
 
 A Viam **sensor** that polls one or more vision-service motion detectors and
 maintains a persistent, on-device JSON ledger of motion events. The ledger

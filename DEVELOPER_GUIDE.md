@@ -22,7 +22,7 @@ module.
 ├── Makefile                        # build, test, lint, module.tar.gz
 ├── README.md                       # configuration reference
 ├── SETUP.md                        # end-user setup walkthrough
-└── bill_motion-ledger_ledger.md    # registry model page
+└── viam-soleng_motion-ledger_ledger.md    # registry model page
 ```
 
 The split is deliberate: `utils/ledger/` has no Viam dependencies and is
@@ -136,7 +136,7 @@ command:
    work, return `map[string]interface{}` with at least `"status"`.
 2. Add the dispatch case in `DoCommand` (`module.go` ~line 193).
 3. Document the command in both `README.md` ("Commands" section) and
-   `bill_motion-ledger_ledger.md` (the table of DoCommand entries).
+   `viam-soleng_motion-ledger_ledger.md` (the table of DoCommand entries).
 4. Add a test if the logic is non-trivial.
 
 ## Adding a new Config field
@@ -146,7 +146,7 @@ command:
    `Validate`. Test the default in `module_test.go`.
 3. If it has structural constraints (must be non-negative, etc.), enforce
    them in `Validate`.
-4. Document in `README.md` (attributes table), `bill_motion-ledger_ledger.md`
+4. Document in `README.md` (attributes table), `viam-soleng_motion-ledger_ledger.md`
    (attributes table), and `SETUP.md` if it changes the setup flow.
 
 ## Releasing a new version to the registry
@@ -249,14 +249,14 @@ new version and confirm it loads:
 ```json
 {
   "type": "registry",
-  "name": "bill_motion-ledger",
-  "module_id": "bill:motion-ledger",
+  "name": "viam-soleng_motion-ledger",
+  "module_id": "viam-soleng:motion-ledger",
   "version": "0.1.0"
 }
 ```
 
 Watch the **LOGS** tab for `Successfully constructed resource ...
-bill:motion-ledger:ledger`. If there's a problem, the customer-facing
+viam-soleng:motion-ledger:ledger`. If there's a problem, the customer-facing
 errors are documented in [SETUP.md](SETUP.md#troubleshooting).
 
 ### Pre-release checklist
@@ -268,6 +268,6 @@ Before tagging a new version, confirm:
 - [ ] `go build ./...` clean
 - [ ] README and SETUP reflect the changes
 - [ ] If `Config` changed, all three doc surfaces are updated:
-      `README.md`, `bill_motion-ledger_ledger.md`, `SETUP.md`
+      `README.md`, `viam-soleng_motion-ledger_ledger.md`, `SETUP.md`
 - [ ] meta.json `description` and `url` are accurate
 - [ ] Commits are pushed to the ref you'll pass to `--ref`

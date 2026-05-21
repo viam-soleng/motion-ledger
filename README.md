@@ -8,7 +8,7 @@ to the cloud.
 
 ## Models
 
-- `bill:motion-ledger:ledger` — see [bill_motion-ledger_ledger.md](bill_motion-ledger_ledger.md).
+- `viam-soleng:motion-ledger:ledger` — see [viam-soleng_motion-ledger_ledger.md](viam-soleng_motion-ledger_ledger.md).
 
 ## Setup
 
@@ -46,7 +46,7 @@ A poll runs in either of two ways:
 {
   "name": "motion-ledger-1",
   "type": "sensor",
-  "model": "bill:motion-ledger:ledger",
+  "model": "viam-soleng:motion-ledger:ledger",
   "attributes": {
     "ledger_path": "/var/lib/viam/motion-events.json",
     "retention_hours": 48,
